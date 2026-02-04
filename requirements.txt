@@ -2,3 +2,6 @@ streamlit
 google-generativeai
 ##anthropic
 requests
+pydicom
+pillow
+numpy
