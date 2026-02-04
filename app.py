@@ -1,109 +1,63 @@
 import streamlit as st
-import requests
 import google.generativeai as genai
+import pydicom
+from PIL import Image
+import numpy as np
+import io
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Neuro-Onco Navigator", layout="wide")
+st.set_page_config(page_title="Cancer Navigator V1", layout="wide")
 
-# Connect to Google Gemini (Free Tier)
+# API Setup
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+# We use Pro here because it is better at vision tasks
+model = genai.GenerativeModel('gemini-1.5-pro') 
 
-# --- UI HEADER ---
-st.title("🧠 Neuro-Onco Navigator")
-st.markdown("### Global Brain Cancer Intelligence Briefing")
+st.title("🧠 Neuro-Onco Navigator V1")
+st.markdown("### Personalized MRI Analysis & Clinical Intelligence")
 
-# --- SIDEBAR FILTERS ---
-with st.sidebar:
-    st.header("Search Filters")
-    
-    # 1. Expanded Cancer Type Dropdown
-    cancer_options = [
-        "Glioblastoma (GBM)", 
-        "Astrocytoma", 
-        "Oligodendroglioma", 
-        "Diffuse Midline Glioma (DIPG)", 
-        "Meningioma", 
-        "Ependymoma", 
-        "Medulloblastoma", 
-        "Brain Metastases (Secondary)", 
-        "CNS Lymphoma",
-        "Other"
-    ]
-    selected_cancer = st.selectbox("Cancer Type", cancer_options)
-    
-    # Show text input if "Other" is selected
-    if selected_cancer == "Other":
-        cancer_type = st.text_input("Please specify cancer type:")
+# --- MRI UPLOAD FEATURE ---
+st.header("📂 Step 1: Upload Your Imaging")
+uploaded_file = st.file_uploader("Upload an MRI Slice (.dcm or .jpg/.png)", type=['dcm', 'jpg', 'png'])
+
+if uploaded_file is not None:
+    # 1. Process the Image
+    if uploaded_file.name.endswith('.dcm'):
+        ds = pydicom.dcmread(uploaded_file)
+        # Convert DICOM pixel data to an image
+        pixel_array = ds.pixel_array
+        rescaled_image = (np.maximum(pixel_array, 0) / pixel_array.max()) * 255
+        final_image = Image.fromarray(rescaled_image.astype(np.uint8))
     else:
-        cancer_type = selected_cancer
+        final_image = Image.open(uploaded_file)
 
-    # 2. Expanded Mutation Dropdown
-    mutation_options = [
-        "IDH1/IDH2 Mutant", 
-        "IDH-Wildtype", 
-        "MGMT Methylated", 
-        "MGMT Unmethylated", 
-        "EGFRvIII / EGFR Amplification", 
-        "H3K27M", 
-        "1p/19q Codeleted", 
-        "BRAF V600E", 
-        "PTEN Loss",
-        "Other"
-    ]
-    selected_mutation = st.selectbox("Genetic Mutation / Marker", mutation_options)
-    
-    # Show text input if "Other" is selected
-    if selected_mutation == "Other":
-        mutation = st.text_input("Please specify mutation (e.g., TERT, PIK3CA):")
-    else:
-        mutation = selected_mutation
+    st.image(final_image, caption="Uploaded Scan Preview", width=400)
 
-    region = st.selectbox("Region", ["Global", "United States", "Europe", "Asia"])
-    search_button = st.button("Generate Intelligence Report")
-
-# --- DATA FETCHING & AI LOGIC ---
-def fetch_trials(mutation_query, condition):
-    url = "https://clinicaltrials.gov/api/v2/studies"
-    params = {
-        "query.cond": condition,
-        "query.term": mutation_query,
-        "pageSize": 8
-    }
-    response = requests.get(url, params=params)
-    return response.json()
-
-if search_button:
-    if not cancer_type or not mutation:
-        st.warning("Please specify both a Cancer Type and a Mutation.")
-    else:
-        with st.spinner(f"Analyzing global data for {mutation} in {cancer_type}..."):
-            raw_trials = fetch_trials(mutation, cancer_type)
+    # 2. AI Analysis
+    if st.button("Analyze Image Findings"):
+        with st.spinner("AI is scanning for concerning features..."):
+            # Prompting Gemini for medical image reasoning
+            prompt = """
+            Analyze this brain MRI image. Provide 3-4 bullets on what might look 'concerning' 
+            (e.g., midline shift, enhancement, edema, mass effect). 
+            Then, provide 5 specific questions the patient should ask their Neurologist 
+            or Neuro-Oncologist based on this scan.
             
-            prompt = f"""
-            Act as a medical research navigator. I have raw clinical trial data for {cancer_type} with {mutation} mutation.
-            Summarize this into a clean, 'App-style' dashboard.
-            
-            Structure your response with:
-            1. 🏥 **Top Specialty Centers**: List centers involved.
-            2. 🧪 **Active Clinical Trials**: List trials with Phase, Goal, and a clickable link (https://clinicaltrials.gov/study/[NCTID]).
-            3. 📞 **Contact Information**: Extract names/emails/phones.
-            4. 💡 **Research Direction**: A 3-sentence summary of what's currently being studied for this specific profile.
-            
-            Raw Data: {raw_trials}
+            DISCLAIMER: Start with a clear warning that you are an AI, not a doctor, 
+            and this is for educational purposes only.
             """
             
-            try:
-                response = model.generate_content(prompt)
-                st.markdown("---")
-                st.markdown(response.text)
-                st.success("Report Generated. Links are live.")
-            except Exception as e:
-                st.error(f"AI Service Error: {e}")
-else:
-    st.info("👈 Use the sidebar to filter by diagnosis and mutation.")
+            response = model.generate_content([prompt, final_image])
+            
+            st.markdown("---")
+            st.markdown("### 🔍 Scan Insights")
+            st.write(response.text)
 
-# --- FOOTER ---
+# --- SEARCH & CHATBOT (Previously Built) ---
 st.markdown("---")
-st.caption("⚠️ **Disclaimer**: This tool is for informational purposes only. It does not provide medical advice. Managed by Neuro-Onco Navigator.")
+st.header("💬 Ask the Patient Concierge")
+user_q = st.text_input("Ask a follow-up about your MRI or diagnosis:")
+if user_q:
+    response = model.generate_content(f"Answer this medical question as a helpful assistant: {user_q}")
+    st.info(response.text)
