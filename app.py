@@ -1,118 +1,115 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-from cryptography.fernet import Fernet
-import pydicom
-import numpy as np
-from PIL import Image
+from google.api_core import exceptions
+import time
+import random
 
-# --- 1. CONFIGURATION & DATA ---
-st.set_page_config(page_title="Navigator v3.1", layout="wide")
+# --- 1. CONFIG & DATA (2026 BENCHMARKS) ---
+st.set_page_config(page_title="Navigator v3.4", layout="wide")
 
-# Real-world 2026 data mapping for survival/stats
 CANCER_DATA = {
     "Brain": {
-        "Stats": {"Incidence": "25k/yr", "Risk": "Low (1%)", "5yr_Survival": "33%"},
+        "Stats": {"Incidence": "24,740 (US)", "5yr_Survival": "33% (Avg)", "Trend": "Stable"},
         "Types": {
-            "Oligodendroglioma": {
-                "Grades": ["WHO Grade 2", "WHO Grade 3"],
-                "Mutations": ["IDH1 Mutant", "1p/19q Co-deleted", "IDH Wildtype"],
-                "OS": {"Grade 2": "12-15 yrs", "Grade 3": "6-9 yrs"}
-            },
             "Astrocytoma": {
-                "Grades": ["Grade 2", "Grade 3", "Grade 4 (GBM)"],
-                "Mutations": ["IDH1 Mutant", "ATRX Loss", "TP53 Mutant"],
-                "OS": {"Grade 2": "8-10 yrs", "Grade 4": "1.5 yrs"}
+                "Grades": ["Grade 2", "Grade 3", "Grade 4"],
+                "Mutations": ["IDH-mutant", "IDH-wildtype"],
+                "PFS": {"Grade 3": "53-59 months (IDH-mutant)", "Grade 4": "12-15 months"}
+            },
+            "Oligodendroglioma": {
+                "Grades": ["Grade 2", "Grade 3"],
+                "Mutations": ["1p/19q Co-deleted", "IDH-mutant"],
+                "PFS": {"Grade 2": "10+ years"}
             }
         }
     },
     "Breast": {
-        "Stats": {"Incidence": "320k/yr", "Risk": "High (13%)", "5yr_Survival": "91%"},
+        "Stats": {"Incidence": "324,580 (US)", "5yr_Survival": "91%", "Trend": "Rising in <50s"},
         "Types": {
-            "Invasive Ductal Carcinoma": {
+            "Invasive Ductal": {
                 "Grades": ["Grade 1", "Grade 2", "Grade 3"],
                 "Mutations": ["HER2+", "Triple Negative", "ER/PR+"],
-                "OS": {"Grade 1": "High (95%)", "Grade 3": "Variable"}
+                "PFS": {"Grade 1": "Excellent (95%+)"}
             }
         }
     },
-    "Lung": {
-        "Stats": {"Incidence": "230k/yr", "Risk": "Moderate (6%)", "5yr_Survival": "28%"},
+    "Colorectal": {
+        "Stats": {"Incidence": "158,850 (US)", "5yr_Survival": "65%", "Trend": "#1 Killer in <50s"},
         "Types": {
-            "Non-Small Cell (NSCLC)": {
+            "Adenocarcinoma": {
                 "Grades": ["Stage I", "Stage II", "Stage III", "Stage IV"],
-                "Mutations": ["EGFR", "ALK", "KRAS", "PD-L1 High"],
-                "OS": {"Stage I": "70%", "Stage IV": "10%"}
+                "Mutations": ["KRAS Mutant", "BRAF Mutant", "MSI-High"],
+                "PFS": {"Stage IV": "Approx. 18-24 months"}
             }
         }
     }
 }
 
-# Encryption Setup
-cipher_suite = Fernet(st.secrets["ENCRYPTION_KEY"])
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-2.0-flash')
+# AI Setup
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"].strip())
+model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
-# --- 2. DYNAMIC UI LOGIC ---
-st.title("🌐 Universal Cancer Navigator v3.1")
+def safe_ai(prompt):
+    try:
+        return model.generate_content(prompt)
+    except exceptions.ResourceExhausted:
+        st.error("Rate limit hit. Retrying...")
+        time.sleep(2)
+        return model.generate_content(prompt)
 
-# Sidebar Tiered Navigation
+# --- 2. UNIVERSAL SEARCH LOGIC ---
+st.title("🌐 Universal Cancer Navigator v3.4")
+
+# Global Search Bar
+search_query = st.text_input("🔍 Universal Search: Type a diagnosis, mutation, or symptom (e.g., 'What is Grade 3 Astrocytoma?')")
+
+if search_query:
+    with st.spinner("AI Mapping to Clinical Data..."):
+        map_prompt = f"Identify the Organ, Cancer Type, and Grade from this: '{search_query}'. Return only: Organ: [Name], Type: [Name], Grade: [Name]"
+        mapping = safe_ai(map_prompt)
+        st.info(f"AI Detected Profile: {mapping.text}")
+
+# --- 3. DYNAMIC TIERED FILTERS ---
+st.divider()
 with st.sidebar:
     st.header("Step 1: Clinical Profile")
-    organ = st.selectbox("Select Organ System", ["Select..."] + list(CANCER_DATA.keys()))
+    organ = st.selectbox("Select Organ", ["Select..."] + list(CANCER_DATA.keys()))
     
     if organ != "Select...":
-        selected_organ_data = CANCER_DATA[organ]
-        
-        # Next Tier: Type
-        cancer_type = st.selectbox(f"Select {organ} Cancer Type", list(selected_organ_data["Types"].keys()))
-        
-        # Next Tier: Grade/Stage
-        type_data = selected_organ_data["Types"][cancer_type]
-        grade = st.selectbox("Grade/Stage", type_data["Grades"])
-        
-        # Next Tier: Mutation
-        mutation = st.selectbox("Biomarker/Mutation", type_data["Mutations"])
-        
-        st.divider()
-        st.header("Step 2: Upload Imaging")
-        uploaded_file = st.file_uploader("Upload MRI/CT Scan", type=['dcm', 'jpg', 'png'])
+        c_type = st.selectbox("Type", list(CANCER_DATA[organ]["Types"].keys()))
+        grade = st.selectbox("Grade/Stage", CANCER_DATA[organ]["Types"][c_type]["Grades"])
+        mutation = st.selectbox("Mutation", CANCER_DATA[organ]["Types"][c_type]["Mutations"])
+    
+    st.divider()
+    st.header("Step 2: MRI/Imaging")
+    uploaded_file = st.file_uploader("Upload Scan (.dcm, .jpg)", type=['dcm', 'jpg', 'png'])
 
-# --- 3. MAIN DASHBOARD (Updates Automatically) ---
+# --- 4. DASHBOARD & CONCIERGE ---
 if organ != "Select...":
-    st.subheader(f"📊 {organ}: {cancer_type} Dashboard")
+    st.subheader(f"📊 {organ}: {c_type} {grade}")
     
-    # Live Stats Cards
-    c1, c2, c3 = st.columns(3)
-    c1.metric("National Incidence", selected_organ_data["Stats"]["Incidence"])
-    c2.metric("Relative Survival", selected_organ_data["Stats"]["5yr_Survival"])
-    c3.metric("Your Selected Profile", f"{grade} ({mutation})")
-
-    # Survival Comparison Chart
-    st.markdown("### Estimated Outlook (Based on 2026 Data)")
-    os_est = type_data["OS"].get(grade, "Consult Specialist")
-    st.write(f"**Median Overall Survival for this profile:** {os_est}")
-    
-    chart_df = pd.DataFrame({
-        "Profile": ["Average", f"{grade} {mutation}"],
-        "Score": [50, 85 if "Mutant" in mutation else 40] # Visual score for demo
-    })
-    st.bar_chart(chart_df, x="Profile", y="Score")
-
-    # --- 4. MRI ANALYSIS & CHAT ---
-    if uploaded_file:
-        st.divider()
-        st.subheader("🔍 Imaging Insights")
-        # [MRI processing code from previous step goes here...]
-        st.info("MRI Uploaded. Click 'Run Analysis' to see concerning features.")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("2026 Incidence", CANCER_DATA[organ]["Stats"]["Incidence"])
+    m2.metric("5-Year Survival", CANCER_DATA[organ]["Stats"]["5yr_Survival"])
+    m3.metric("Trend", CANCER_DATA[organ]["Stats"]["Trend"])
 
     # Chat Concierge
     st.divider()
-    st.subheader("💬 Real-time Patient Concierge")
-    user_q = st.chat_input(f"Ask anything about {cancer_type}...")
-    if user_q:
+    st.subheader("💬 Patient Concierge Chat")
+    if "messages" not in st.session_state: st.session_state.messages = []
+    
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]): st.markdown(m["content"])
+
+    if chat_in := st.chat_input("Ask about PFS or treatment options..."):
+        st.session_state.messages.append({"role": "user", "content": chat_in})
+        with st.chat_message("user"): st.markdown(chat_in)
+        
         with st.chat_message("assistant"):
-            response = model.generate_content(f"Context: {organ}, {cancer_type}, {grade}, {mutation}. Question: {user_q}")
-            st.write(response.text)
+            p_context = f"Context: {organ}, {c_type}, {grade}, {mutation}."
+            res = safe_ai(f"{p_context} {chat_in}")
+            st.markdown(res.text)
+            st.session_state.messages.append({"role": "assistant", "content": res.text})
 else:
-    st.info("Please select an Organ System in the sidebar to begin.")
+    st.write("### 👈 Start by selecting an Organ or using Universal Search.")
